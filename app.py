@@ -20,6 +20,7 @@ def get_file_paths(file_list):
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         paths.append(file_path)
+    # The sorted() function here correctly handles numeric sorting like file1, file2, file10
     return sorted(paths)
 
 def get_audio_durations(audio_paths):
@@ -33,7 +34,7 @@ def get_audio_durations(audio_paths):
             duration = float(metadata["format"]["duration"])
             durations.append(duration)
         except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
-            st.error(f"Error getting duration for {os.path.basename(audio_path)}: {e}")
+            st.error(f"❌ Error getting duration for {os.path.basename(audio_path)}: {e}")
             return None
     return durations
 
@@ -72,22 +73,23 @@ def create_video(image_paths, durations, progress_bar):
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         for line in process.stdout:
             if "frame=" in line:
-                # Basic progress parsing. This is not precise but gives an idea.
                 try:
-                    frame = int(line.split("frame=")[-1].strip().split(" ")[0])
-                    total_frames = int(sum(durations) * 30) # 30 fps
-                    progress_value = min(frame / total_frames, 1.0)
-                    progress_bar.progress(progress_value)
+                    frame_match = line.split("frame=")[-1].strip().split(" ")[0]
+                    if frame_match.isdigit():
+                        frame = int(frame_match)
+                        total_frames = int(sum(durations) * 30) # 30 fps
+                        progress_value = min(frame / total_frames, 1.0)
+                        progress_bar.progress(progress_value, text=f"Creating video... {int(progress_value*100)}%")
                 except:
                     pass
         process.wait()
         
         if process.returncode != 0:
-            st.error("Error during video creation. Check console for details.")
+            st.error("❌ Error during video creation. Check console for FFmpeg output.")
             return None
         return temp_video
     except Exception as e:
-        st.error(f"Failed to run ffmpeg command: {e}")
+        st.error(f"❌ Failed to run FFmpeg command: {e}")
         return None
 
 def merge_video_audio(temp_video, audio_paths, total_duration, progress_bar):
@@ -95,24 +97,21 @@ def merge_video_audio(temp_video, audio_paths, total_duration, progress_bar):
     st.info("🔄 Merging video and audio...")
     temp_audio = os.path.join(TEMP_DIR, "temp_audio.m4a")
     
-    # Merge all audio files into a single temporary audio file
-    audio_cmd = ["ffmpeg"]
-    
     # Create the audio file list
-    with open("audio_list.txt", "w") as f:
+    audio_list_path = os.path.join(TEMP_DIR, "audio_list.txt")
+    with open(audio_list_path, "w") as f:
         for audio_path in audio_paths:
             f.write(f"file '{os.path.abspath(audio_path)}'\n")
 
-    audio_cmd.extend([
-        "-f", "concat", "-safe", "0", "-i", "audio_list.txt",
+    # Merge all audio files into a single temporary audio file
+    audio_cmd = [
+        "ffmpeg", "-f", "concat", "-safe", "0", "-i", audio_list_path,
         "-c:a", "aac",
         "-b:a", "192k",
         "-y", temp_audio
-    ])
-    
+    ]
     subprocess.run(audio_cmd, check=True)
-    os.remove("audio_list.txt")
-
+    
     # Merge temporary video and audio
     cmd = [
         "ffmpeg", "-i", temp_video, "-i", temp_audio,
@@ -130,33 +129,30 @@ def merge_video_audio(temp_video, audio_paths, total_duration, progress_bar):
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         for line in process.stdout:
             if "time=" in line:
-                # A more robust progress parsing for the final merge
                 try:
                     time_match = line.split("time=")[-1].split(" ")[0]
                     h, m, s = map(float, time_match.split(":"))
                     current_time = h * 3600 + m * 60 + s
                     progress_value = min(current_time / total_duration, 1.0)
-                    progress_bar.progress(progress_value)
+                    progress_bar.progress(progress_value, text=f"Merging... {int(progress_value*100)}%")
                 except:
                     pass
         process.wait()
 
         if process.returncode != 0:
-            st.error("Error during final merge. Check console for details.")
+            st.error("❌ Error during final merge. Check console for FFmpeg output.")
             return False
         return True
     except Exception as e:
-        st.error(f"Failed to run ffmpeg command: {e}")
+        st.error(f"❌ Failed to run FFmpeg command: {e}")
         return False
-    finally:
-        if os.path.exists(temp_audio):
-            os.remove(temp_audio)
 
 def clean_up():
     """Removes the temporary directory."""
     if os.path.exists(TEMP_DIR):
         shutil.rmtree(TEMP_DIR)
-    st.success("✨ Process complete!")
+    if os.path.exists(OUTPUT_VIDEO):
+        os.remove(OUTPUT_VIDEO)
 
 # --- Streamlit UI ---
 st.title("🎬 Video Creation from Audio and Images")
@@ -171,6 +167,8 @@ audio_files = st.file_uploader("Upload Audio Files (MP3)", type=["mp3"], accept_
 image_files = st.file_uploader("Upload Image Files (JPG, PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 if st.button("Generate Video"):
+    clean_up() # Start with a clean slate
+    
     # --- Pre-check ---
     if not audio_files or not image_files:
         st.error("❌ Please upload both audio and image files.")
@@ -187,16 +185,17 @@ if st.button("Generate Video"):
                 # Get durations
                 durations = get_audio_durations(audio_paths)
                 if durations is None:
-                    return
+                    # An error occurred, exit gracefully
+                    st.stop()
 
                 total_duration = sum(durations)
                 st.write(f"🎧 Total audio duration: **{total_duration:.2f} seconds**")
                 
-                video_progress = st.progress(0, text="Creating video...")
+                video_progress = st.progress(0, text="Starting video creation...")
                 temp_video = create_video(image_paths[:len(audio_files)], durations, video_progress)
                 
                 if temp_video:
-                    final_progress = st.progress(0, text="Merging audio and video...")
+                    final_progress = st.progress(0, text="Starting final merge...")
                     if merge_video_audio(temp_video, audio_paths, total_duration, final_progress):
                         st.balloons()
                         st.success("✅ Video created successfully!")
@@ -206,7 +205,8 @@ if st.button("Generate Video"):
                             file_name=OUTPUT_VIDEO,
                             mime="video/mp4"
                         )
-                    os.remove(temp_video) # Clean up temp video
+                    # Clean up the temporary video file regardless of final merge success
+                    os.remove(temp_video) 
         
         except Exception as e:
             st.error(f"An unexpected error occurred: {e}")
