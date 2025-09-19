@@ -170,16 +170,13 @@ Files will be sorted numerically (e.g., `audio1.mp3`, `audio2.mp3`).
 audio_files = st.file_uploader("Upload Audio Files (MP3)", type=["mp3"], accept_multiple_files=True)
 image_files = st.file_uploader("Upload Image Files (JPG, PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-if audio_files and image_files:
-    if st.button("Generate Video"):
-        st.session_state.processing = True
-        
-        # --- Pre-check ---
-        if len(image_files) < len(audio_files):
-            st.error("❌ Not enough images! You need at least one image for each audio file.")
-            st.session_state.processing = False
-            return
-
+if st.button("Generate Video"):
+    # --- Pre-check ---
+    if not audio_files or not image_files:
+        st.error("❌ Please upload both audio and image files.")
+    elif len(image_files) < len(audio_files):
+        st.error("❌ Not enough images! You need at least one image for each audio file.")
+    else:
         # --- Main Process ---
         try:
             with st.spinner("Processing..."):
